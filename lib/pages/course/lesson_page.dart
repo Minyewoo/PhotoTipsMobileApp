@@ -5,7 +5,6 @@ import 'package:photo_tips/constants.dart';
 import 'package:photo_tips/data/models/lecture_content.dart';
 import 'package:photo_tips/data/models/module_entry.dart';
 import 'package:photo_tips/pages/camera/camera_page.dart';
-import 'package:photo_tips/pages/camera/camera_page4.dart';
 import 'package:photo_tips/pages/course/course_page.dart';
 import 'package:photo_tips/screen_config.dart';
 import 'package:photo_tips/widgets/custom_button.dart';
@@ -337,7 +336,7 @@ class _LessonPageState extends State<LessonPage>
                       //    builder: (BuildContext context) =>CameraPage4(
                       //      moduleEntryId: _entry.id,
                       //  )));
-                      Navigator.pushNamed(context, CameraPage4.routeName);
+                      Navigator.pushNamed(context, CameraPage.routeName);
                       },
                       
                           //

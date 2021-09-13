@@ -7,7 +7,7 @@ class ForgorPasswordPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      resizeToAvoidBottomPadding: false,
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(backgroundColor: Theme.of(context).scaffoldBackgroundColor,),
       body: Body(),
     );

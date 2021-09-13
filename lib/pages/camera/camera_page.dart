@@ -1,118 +1,116 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' show pi;
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'dart:math' show pi, pow, sqrt;
+import 'dart:ui';
+
 import 'package:camera/camera.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:native_device_orientation/native_device_orientation.dart';
 import 'package:photo_tips/camera_config.dart';
-import 'package:path/path.dart' show join;
-import 'package:path_provider/path_provider.dart';
 import 'package:photo_tips/cubit/auth_cubit.dart';
 import 'package:photo_tips/cubit/photo_cubit.dart';
-import 'package:photo_tips/cubit/user_cubit.dart';
 import 'package:photo_tips/data/repositories/photo_repository.dart';
-import 'package:photo_tips/data/repositories/user_repository.dart';
-import 'package:photo_tips/pages/camera/components/bottom_bar.dart';
-import 'package:photo_tips/pages/galery/galery_page.dart';
+// import 'package:photo_tips/data/repositories/submission_repository.dart';
+// import 'package:photo_tips/pages/camera/components/setting_slider.dart';
+import 'package:photo_tips/pages/main/main_page.dart';
 import 'package:photo_tips/screen_config.dart';
 import 'package:sensors/sensors.dart';
+import 'package:video_player/video_player.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 
 class CameraPage extends StatefulWidget {
   static String routeName = "/camera";
-  final CameraDescription camera;
+  final int moduleEntryId;
 
-  CameraPage({Key key, this.camera}) : super(key: key);
+  const CameraPage({Key key, this.moduleEntryId}) : super(key: key);
   @override
   _CameraPageState createState() => _CameraPageState();
 }
 
+/// Returns a suitable camera icon for [direction].
+IconData getCameraLensIcon(CameraLensDirection direction) {
+  switch (direction) {
+    case CameraLensDirection.back:
+      return Icons.camera_rear;
+    case CameraLensDirection.front:
+      return Icons.camera_front;
+    case CameraLensDirection.external:
+      return Icons.camera;
+  }
+  throw ArgumentError('Unknown lens direction');
+}
+
+void logError(String code, String message) =>
+    print('Error: $code\nError Message: $message');
+
 class _CameraPageState extends State<CameraPage>
-    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
-  StreamSubscription<GyroscopeEvent> _gyroscopeSubscription;
-  AnimationController _animationController;
+    with WidgetsBindingObserver, TickerProviderStateMixin {
+      int moduleEntryId;
+  CameraController controller;
+  VideoPlayerController videoController;
+  VoidCallback videoPlayerListener;
+  XFile imageFile;
+  XFile videoFile;
+  bool enableAudio = true;
+  double _minAvailableExposureOffset = 0.0;
+  double _maxAvailableExposureOffset = 0.0;
+  int _minAvailableExposureTime = 0;
+  int _maxAvailableExposureTime = 0;
+  int _minAvailableIsoValue = 0;
+  int _maxAvailableIsoValue = 0;
+  double _currentExposureOffset = 0.0;
+  int _currentExposureTime = 0;
+  int _currentIsoValue = 100;
+  double _horizonLevel = 0.0;
+  double _rotation = 0.0;
+  AnimationController _iconRotationAnimationController;
+  Animation<double> _iconRotationAnimation;
   Tween<double> _tween;
-  Animation<double> _animation;
-  CameraController _cameraController;
-  Future<void> _initializeControllerFuture;
-  Future<void> _initializeExpValuesFuture;
-  Future<void> _initializeIsoValuesFuture;
-  Future<void> _initializeManualModeFuture;
-  bool isGridVisible;
-  bool isHorizonVisible;
-  bool isRAWEnabled;
-  FlashMode _flashMode;
-  FocusMode _focusMode;
-  ExposureMode _exposureMode;
-  WbMode _wbMode;
-  IsoMode _isoMode;
-  double _exposureOffset;
-  int _isoValue;
-  double _rotation;
-  double _horizonLevel;
-  List<dynamic> expValues;
-  List<dynamic> secValues;
-  List<dynamic> isoValues;
-  Map<String, dynamic> focusValues = {
-    'AUTO': FocusMode.auto,
-    'USER': FocusMode.locked
-  };
-  Map<String, dynamic> wbValues = {
-    'AUTO': WbMode.auto,
-    '2300K': WbMode.incandescent,
-    '4000K': WbMode.fluorescent,
-    '4500K': WbMode.warm_fluorescent,
-    '5200K': WbMode.daylight,
-    '6500K': WbMode.cloudy_daylight,
-    '7000K': WbMode.twilight,
-    '8000K': WbMode.shade
-  };
   double _minAvailableZoom;
   double _maxAvailableZoom;
   double _currentScale = 1.0;
   double _baseScale = 1.0;
-
+  ExposureMode _exposureMode = ExposureMode.auto;
+  FlashMode _flashMode = FlashMode.off;
+  WbMode _wbMode = WbMode.auto;
+  IsoMode _isoMode = IsoMode.auto;
+  FocusMode _focusMode = FocusMode.auto;
+  bool _isSettingsShown = false;
+  bool _isGridVisible = false;
+  bool _isHorizonVisible = false;
   // Counting pointers (number of user fingers on screen)
   int _pointers = 0;
-
+  int _currentSettingIndex = null;
   StreamSubscription<NativeDeviceOrientation> _orientationSubscribtion;
+  StreamSubscription<GyroscopeEvent> _gyroscopeSubscription;
 
-  void _handleScaleStart(ScaleStartDetails details) {
-    _baseScale = _currentScale;
-  }
+  Map<WbMode, String> wbValues = {
+    WbMode.auto: 'AUTO',
+    WbMode.incandescent: '2300K',
+    WbMode.fluorescent: '4000K',
+    WbMode.warm_fluorescent: '4500K',
+    WbMode.daylight: '5200K',
+    WbMode.cloudy_daylight: '6500K',
+    WbMode.twilight: '7000K',
+    WbMode.shade: '8000K',
+  };
 
-  Future<void> _handleScaleUpdate(ScaleUpdateDetails details) async {
-    // When there are not exactly two fingers on screen don't scale
-    if (_pointers != 2) {
-      return;
-    }
-
-    _currentScale = (_baseScale * details.scale)
-        .clamp(_minAvailableZoom, _maxAvailableZoom);
-
-    await _cameraController.setZoomLevel(_currentScale);
-  }
-
-  void onViewFinderTap(TapDownDetails details, BoxConstraints constraints) {
-    final offset = Offset(
-      details.localPosition.dx / constraints.maxWidth,
-      details.localPosition.dy / constraints.maxHeight,
-    );
-    _cameraController.setExposurePoint(offset);
-    _cameraController.setFocusPoint(offset);
-  }
+  Future<void> _initializeControllerFuture;
 
   @override
   void initState() {
-    _rotation = 0.0;
-    _horizonLevel = 0.0;
-    _animationController =
-        AnimationController(vsync: this, duration: Duration(milliseconds: 500))
-          ..value = 0.5;
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    moduleEntryId = widget.moduleEntryId;
+
+    _iconRotationAnimationController = AnimationController(
+        duration: const Duration(milliseconds: 500), vsync: this, value: 0.5);
+
     _tween = Tween(begin: -pi / 2.0, end: pi / 2.0);
-    _animation = _tween.animate(_animationController)
+
+    _iconRotationAnimation = _tween.animate(_iconRotationAnimationController)
       ..addListener(() {
         setState(() {});
       });
@@ -125,120 +123,13 @@ class _CameraPageState extends State<CameraPage>
       rotateIcons(event);
     });
 
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-
-    isGridVisible = false;
-    isHorizonVisible = false;
-    isRAWEnabled = false;
-    _flashMode = FlashMode.off;
-    _exposureMode = ExposureMode.auto;
-    _wbMode = WbMode.auto;
-    _isoMode = IsoMode.auto;
-    _exposureOffset = 0.0;
-    _isoValue = 100;
-    // To display the current output from the Camera,
-    // create a CameraController.
-    _cameraController = CameraController(
-      // Get a specific camera from the list of available cameras.
-      widget.camera ?? CameraConfig.cameras.first,
-      // Define the resolution to use.
-      ResolutionPreset.veryHigh,
-      enableAudio: false,
-    );
-    // Next, initialize the controller. This returns a Future.
-    _initializeControllerFuture = _cameraController.initialize();
-    //_initializeControllerFuture.then((_) => onNewCameraSelected(_cameraController.description));
-
-    //_initializeExpValuesFuture = initExpValues();
-    //_initializeIsoValuesFuture = initIsoValues();
-    _initializeManualModeFuture = initManualMode();
-    //wbValues = WbMode.values.map((value) => serializeWbMode(value)).toList();
+    onNewCameraSelected(CameraConfig.cameras.first);
   }
 
-  Future<void> initExpValues() async {
-    await _initializeControllerFuture;
-    double maxExp = await _cameraController.getMaxExposureOffset();
-    double minExp = await _cameraController.getMinExposureOffset();
-    expValues = [
-      'AUTO',
-      ...List.generate((maxExp + minExp.abs()) ~/ 0.1 + 1,
-          (index) => (minExp + (index * 0.1)).toStringAsFixed(1))
-    ];
-  }
-
-  Future<void> initSecValues() async {
-    await _initializeControllerFuture;
-    int _minAvailableExposureTime =
-        await _cameraController.getMinExposureTime();
-    int _maxAvailableExposureTime =
-        await _cameraController.getMaxExposureTime();
-    var step = (_maxAvailableExposureTime - _minAvailableExposureTime) ~/ (100);
-    secValues = [
-      'AUTO',
-      ...List.generate(101,
-          (index) => (_minAvailableExposureTime + (index * step)).toString())
-    ];
-    print(secValues);
-  }
-
-  Future<void> initIsoValues() async {
-    await _initializeControllerFuture;
-    int maxIso = await _cameraController.getMaxIsoValue();
-    //int minIso = await _cameraController.getMinIsoValue();
-    isoValues = [
-      'AUTO',
-      ...List.generate(
-          (maxIso + 100) ~/ 100 - 1, (index) => (100 + (index * 100)))
-    ];
-  }
-
-  Future<void> initManualMode() async {
-    await _initializeControllerFuture;
-    await initExpValues();
-    await initSecValues();
-    await initIsoValues();
-    _maxAvailableZoom = await _cameraController.getMaxZoomLevel();
-    _minAvailableZoom = await _cameraController.getMinZoomLevel();
-    _cameraController.setExposureMode(ExposureMode.auto);
-    _cameraController.setFocusMode(FocusMode.auto);
-  }
-
-  String serializeWbMode(WbMode exposureMode) {
-    switch (exposureMode) {
-      case WbMode.auto:
-        return 'auto';
-      case WbMode.incandescent:
-        return 'incandescent';
-      case WbMode.fluorescent:
-        return 'fluorescent';
-      case WbMode.warm_fluorescent:
-        return 'warm_fluorescent';
-      case WbMode.daylight:
-        return 'daylight';
-      case WbMode.cloudy_daylight:
-        return 'cloudy_daylight';
-      case WbMode.twilight:
-        return 'twilight';
-      case WbMode.shade:
-        return 'shade';
-      default:
-        throw ArgumentError('Unknown WbMode value');
-    }
-  }
-
-  void subscribeToGiro() {
-    _horizonLevel = 0.0;
-    _gyroscopeSubscription = gyroscopeEvents.listen((GyroscopeEvent event) {
-      setState(() {
-        _horizonLevel += event.z / 2.65;
-      });
+  void changeSettingIndex(int index) {
+    setState(() {
+      _currentSettingIndex = index;
     });
-  }
-
-  void unsubscribeFromGiro() {
-    _horizonLevel = 0.0;
-    _gyroscopeSubscription?.cancel();
   }
 
   void rotateIcons(NativeDeviceOrientation orientation) {
@@ -265,333 +156,64 @@ class _CameraPageState extends State<CameraPage>
     //_tween.begin = _tween.end;
     //_animationController.reset();
     //_tween.end = rotation;
-    _animationController.animateTo(
+    _iconRotationAnimationController.animateTo(
       progress,
       curve: Curves.easeInOut,
     );
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // App state changed before we got the chance to initialize.
-    if (_cameraController == null || !_cameraController.value.isInitialized) {
-      return;
-    }
-    if (state == AppLifecycleState.inactive) {
-      _cameraController?.dispose();
-    } else if (state == AppLifecycleState.resumed) {
-      if (_cameraController != null) {
-        onNewCameraSelected(_cameraController.description);
-      }
-    }
+  String stringifyExposureMode(ExposureMode mode) {
+    Map<ExposureMode, String> values = {
+      ExposureMode.auto: 'AUTO',
+      ExposureMode.locked: 'LOCKED',
+    };
+    return values[mode];
   }
 
-  void onNewCameraSelected(CameraDescription cameraDescription) async {
-    if (_cameraController != null) {
-      await _cameraController.dispose();
-    }
-    _cameraController = CameraController(
-      cameraDescription,
-      ResolutionPreset.veryHigh,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
-    );
-
-    // If the controller is updated then update the UI.
-    _cameraController.addListener(() {
-      if (mounted) setState(() {});
-      if (_cameraController.value.hasError) {
-        print('Camera error ${_cameraController.value.errorDescription}');
-      }
-    });
-
-    try {
-      await _cameraController.initialize();
-      //_minAvailableExposureOffset = await _cameraController.getMinExposureOffset();
-      //_maxAvailableExposureOffset = await _cameraController.getMaxExposureOffset();
-      _maxAvailableZoom = await _cameraController.getMaxZoomLevel();
-      _minAvailableZoom = await _cameraController.getMinZoomLevel();
-    } on CameraException catch (e) {
-      print(e.description);
-      //_showCameraException(e);
-    }
-
-    if (mounted) {
-      setState(() {});
-    }
+  String stringifyIsoMode(IsoMode mode) {
+    Map<IsoMode, String> values = {
+      IsoMode.auto: 'AUTO',
+      IsoMode.locked: 'LOCKED',
+    };
+    return values[mode];
   }
 
-  /*void onNewCameraSelected(CameraDescription cameraDescription) async {
-    if (_cameraController != null) {
-      await _cameraController.dispose();
-    }
-    _cameraController = CameraController(
-      cameraDescription,
-      ResolutionPreset.veryHigh,
-      enableAudio: false,
-    );
+  String stringifyWbMode(WbMode mode) {
+    return wbValues[mode];
+  }
 
-    // If the controller is updated then update the UI.
-    _cameraController.addListener(() {
-      if (mounted) setState(() {});
-      if (_cameraController.value.hasError) {
-        //showInSnackBar('Camera error ${controller.value.errorDescription}');
-      }
-    });
-
-    try {
-      await _cameraController.initialize();
-    } on CameraException catch (e) {
-      //_showCameraException(e);
-    }
-
-    if (mounted) {
-      setState(() {});
-    }
-  }*/
+  String stringifyFocusMode(FocusMode mode) {
+    Map<FocusMode, String> values = {
+      FocusMode.auto: 'AUTO',
+      FocusMode.locked: 'USER'
+    };
+    return values[mode];
+  }
 
   @override
   void dispose() {
-    _orientationSubscribtion?.cancel();
-    unsubscribeFromGiro();
-    // Dispose of the controller when the widget is disposed.
     WidgetsBinding.instance.removeObserver(this);
-    _cameraController.dispose();
+    _orientationSubscribtion?.cancel();
+    _iconRotationAnimationController.dispose();
     super.dispose();
   }
 
-  void toggleGrid() {
-    setState(() {
-      isGridVisible = !isGridVisible;
-    });
-  }
-
-  void toggleHorizon() {
-    isHorizonVisible ? unsubscribeFromGiro() : subscribeToGiro();
-    setState(() {
-      isHorizonVisible = !isHorizonVisible;
-    });
-  }
-
-  void toggleRAW() {
-    setState(() {
-      isRAWEnabled = !isRAWEnabled;
-    });
-  }
-
-  Future<void> toggleTorch() async {
-    if (_flashMode == FlashMode.off) {
-      // Turn on the flash for capture
-      _flashMode = FlashMode.torch;
-    } else if (_flashMode == FlashMode.always ||
-        _flashMode == FlashMode.torch) {
-      // Turn on the flash for capture if needed
-      _flashMode = FlashMode.auto;
-    } else {
-      // Turn off the flash
-      _flashMode = FlashMode.off;
-    }
-
-    await _cameraController.setFlashMode(_flashMode);
-
-    setState(() {});
-  }
-
-  Icon getTorchIcon() {
-    switch (_flashMode) {
-      case FlashMode.off:
-        return Icon(
-          Icons.flash_off,
-          color: Color(0xFFF5F5F5),
-        );
-      case FlashMode.always:
-        return Icon(
-          Icons.flash_on,
-          color: Color(0xFFFFD600),
-        );
-      case FlashMode.torch:
-        return Icon(
-          Icons.flash_on,
-          color: Color(0xFFFFD600),
-        );
-      case FlashMode.auto:
-        return Icon(
-          Icons.flash_auto,
-          color: Color(0xFFFFD600),
-        );
-      default:
-        return Icon(
-          Icons.flash_off,
-          color: Color(0xFFF5F5F5),
-        );
-    }
-  }
-
-  Future<void> setExposure(dynamic value) async {
-    if (value == 'AUTO') {
-      await _cameraController.setExposureOffset(0.0);
-      await _cameraController.setExposureMode(ExposureMode.auto);
-    } else {
-      //await _cameraController.setExposureMode(ExposureMode.locked);
-      await _cameraController.setExposureOffset(double.parse(value));
-    }
-  }
-
-  Future<void> setExposureTime(dynamic value) async {
-    if (value == 'AUTO') {
-      //await _cameraController.setExposureTime(100);
-      await _cameraController.setExposureMode(ExposureMode.auto);
-    } else {
-      //await _cameraController.setExposureMode(ExposureMode.locked);
-      //print(value);
-      await _cameraController.setExposureMode(ExposureMode.locked);
-      await _cameraController.setExposureTime(int.parse(value));
-    }
-  }
-
-  Future<void> setIso(dynamic value) async {
-    if (value == 'AUTO') {
-      await _cameraController.setIsoMode(IsoMode.auto);
-      //await _cameraController.setExposureMode(ExposureMode.auto);
-    } else {
-      //await _cameraController.setExposureMode(ExposureMode.locked);
-      await _cameraController.setIsoMode(IsoMode.locked);
-      await _cameraController.setIsoValue(value);
-    }
-  }
-
-  Future<void> setWb(dynamic value) async {
-    if (value == 'AUTO') {
-      await _cameraController.setWbMode(WbMode.auto);
-      //await _cameraController.setExposureMode(ExposureMode.auto);
-    } else {
-      //await _cameraController.setExposureMode(ExposureMode.locked);
-      //await _cameraController.setIsoMode(IsoMode.locked);
-      await _cameraController.setWbMode(wbValues[value]);
-    }
-  }
-
-  Future<void> setFocusMode(dynamic value) async {
-    await _cameraController.setFocusMode(focusValues[value]);
-  }
-
-  Future<XFile> takePhoto() async {
-    if (!_cameraController.value.isInitialized) {
-      return null;
-    }
-
-    if (_cameraController.value.isTakingPicture) {
-      // A capture is already pending, do nothing.
-      return null;
-    }
-
-    try {
-      //_cameraController.setFocusMode(FocusMode.locked);
-      //_cameraController.setExposureMode(ExposureMode.locked)
-      XFile file = await _cameraController.takePicture();
-      return file;
-    } on CameraException catch (e) {
-      return null;
-    }
-  }
-
-  void onTakePictureButtonPressed() async {
-    var file = await takePhoto();
-    var state = context.read<AuthCubit>().state;
-    if (file != null && state is AuthSignedIn)
-      ApiPhotoRepository().addPhoto(state.token, file.path).then((_) {
-        context.read<PhotoCubit>().getPhotos(state.token);
-      });
-  }
-
   @override
-  Widget build(BuildContext context) {
-    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    return Scaffold(
-      backgroundColor: Color(0xFF282828),
-      extendBody: true,
-      extendBodyBehindAppBar: true,
-      appBar: PreferredSize(
-        preferredSize: Size.fromHeight(56),
-        child: buildTopBar(context),
-      ),
-      // Wait until the controller is initialized before displaying the
-      // camera preview. Use a FutureBuilder to display a loading spinner
-      // until the controller has finished initializing.
-      body: FutureBuilder<void>(
-        future: _initializeControllerFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.done) {
-            // If the Future is complete, display the preview.
-            return Stack(
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  constraints: BoxConstraints.tightFor(width: double.infinity),
-                  //width: double.infinity,
-                  //height: MediaQuery.of(context).size.height - 80 -68-80 -30,
-                  child: _cameraController != null
-                      ? AspectRatio(
-                          aspectRatio: _cameraController.value.aspectRatio,
-                          child: Listener(
-                            onPointerDown: (_) => _pointers++,
-                            onPointerUp: (_) => _pointers--,
-                            child: LayoutBuilder(
-                              builder: (BuildContext context,
-                                      BoxConstraints constraints) =>
-                                  GestureDetector(
-                                onScaleStart: _handleScaleStart,
-                                onScaleUpdate: _handleScaleUpdate,
-                                onTapDown: (details) =>
-                                    onViewFinderTap(details, constraints),
-                                child: CameraPreview(_cameraController),
-                              ),
-                            ),
-                          ),
-                        )
-                      : Container(),
-                ),
-                isGridVisible
-                    ? Container(
-                        child: buildGrid(),
-                        //height: MediaQuery.of(context).size.height - 80 - 70,
-                      )
-                    : Container(),
-                isHorizonVisible ? buildHorizonLevel() : Container(),
-              ],
-            );
-          } else {
-            // Otherwise, display a loading indicator.
-            return Center(child: CircularProgressIndicator());
-          }
-        },
-      ),
-      bottomNavigationBar: FutureBuilder<void>(
-        future: _initializeManualModeFuture,
-        builder: (context, snapshot) =>
-            snapshot.connectionState == ConnectionState.done
-                ? BottomBar(
-                    animation: _animation,
-                    //isHorizonVisible: isHorizonVisible,
-                    //isGridVisible: isGridVisible,
-                    toggleHorizon: toggleHorizon,
-                    toggleGrid: toggleGrid,
-                    takePhoto: onTakePictureButtonPressed,
-                    setExposure: setExposure,
-                    setExposureTime: setExposureTime,
-                    setIso: setIso,
-                    setWhiteBalance: setWb,
-                    setFocus: setFocusMode,
-                    expValues: expValues,
-                    secValues: secValues,
-                    isoValues: isoValues,
-                    wbValues: wbValues.keys.toList(),
-                    focusValues: ['AUTO', 'USER'],
-                  )
-                : Container(),
-      ),
-    );
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // App state changed before we got the chance to initialize.
+    if (controller == null || !controller.value.isInitialized) {
+      return;
+    }
+    if (state == AppLifecycleState.inactive) {
+      controller?.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      if (controller != null) {
+        onNewCameraSelected(controller.description);
+      }
+    }
   }
+
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   Stack buildGrid() {
     return Stack(
@@ -670,6 +292,542 @@ class _CameraPageState extends State<CameraPage>
     );
   }
 
+  void resetSettings() {
+    _currentSettingIndex = null;
+    setIsoMode(IsoMode.auto);
+    setFlashMode(FlashMode.off);
+    setExposureMode(ExposureMode.auto);
+    controller.setFocusPoint(null);
+    setFocusMode(FocusMode.auto);
+    setWbMode(WbMode.auto);
+
+    _currentIsoValue = 100;
+    _currentExposureTime = (_maxAvailableExposureTime - _minAvailableExposureTime) ~/ 2 +
+            _minAvailableExposureTime;
+    //setExposureOffset(0.0);
+    //resetIsoValue();
+    resetExposureOffset();
+    //resetExposureTime();
+  }
+
+  void resetExposureTime() {
+    setExposureTime(
+        (_maxAvailableExposureTime - _minAvailableExposureTime) ~/ 2 +
+            _minAvailableExposureTime);
+  }
+
+  void resetExposureOffset() {
+    setExposureOffset(0.0);
+  }
+
+  void resetIsoValue() {
+    setIsoValue(100);
+  }
+
+  Widget buildSettings() {
+    switch (_currentSettingIndex) {
+      case 0:
+        return Slider(
+            activeColor: Color(0xFFF5F5F5),
+            min: _minAvailableExposureOffset,
+            max: _maxAvailableExposureOffset,
+            value: _currentExposureOffset,
+            onChanged: setExposureOffset);
+
+      case 1:
+        return Slider(
+          activeColor: Color(0xFFF5F5F5),
+          min: _minAvailableExposureTime.toDouble(),
+          max: _maxAvailableExposureTime.toDouble(),
+
+          //divisions: 10000,
+          value: _currentExposureTime.toDouble(),
+          onChanged: (value) {
+            //setExposureMode(ExposureMode.auto);
+            setExposureTime(value.toInt());
+          },
+        );
+      case 2:
+        return Slider(
+          activeColor: Color(0xFFF5F5F5),
+          divisions: sqrt(_maxAvailableIsoValue ~/ 100).toInt(),
+          min: 0.0,
+          max: sqrt(_maxAvailableIsoValue ~/ 100).toDouble(),
+          value: _currentIsoValue == 100 ? 0.0 : sqrt(_currentIsoValue ~/ 100),
+          onChanged: (value) {
+            setIsoValue(100 * pow(2, value.toInt()));
+          },
+        );
+      case 3:
+        return Slider(
+            activeColor: Color(0xFFF5F5F5),
+            divisions: wbValues.length - 1,
+            min: 0.0,
+            max: (wbValues.length - 1).toDouble(),
+            value: wbValues.keys.toList().indexOf(_wbMode).toDouble(),
+            onChanged: (value) {
+              setWbMode(wbValues.keys.toList()[value.toInt()]);
+            });
+      case 4:
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            InkWell(
+              onTap: () {
+                controller.setFocusPoint(null);
+                setFocusMode(FocusMode.auto);
+              },
+              child: Container(
+                width: 40,
+                height: 20,
+                child: Text(
+                  stringifyFocusMode(FocusMode.auto),
+                  style: TextStyle(
+                    color: _focusMode == FocusMode.auto
+                        ? Colors.yellow
+                        : Color(0xFFF5F5F5),
+                  ),
+                ),
+              ),
+            ),
+            InkWell(
+              onTap: () => setFocusMode(FocusMode.locked),
+              child: Container(
+                width: 40,
+                height: 20,
+                child: Text(
+                  stringifyFocusMode(FocusMode.locked),
+                  style: TextStyle(
+                    color: _focusMode == FocusMode.locked
+                        ? Colors.yellow
+                        : Color(0xFFF5F5F5),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      default:
+        return Container();
+    }
+  }
+
+  String nanosecsToSecondSplit(int nanosecs) {
+    var seconds = nanosecs / pow(10, 9);
+    var secondSplit = 1 ~/ seconds;
+    return '1/${secondSplit > 1000 ? (secondSplit ~/ 1000).toString() + 'K' : secondSplit}';
+    //return '1/${secondSplit}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      key: _scaffoldKey,
+      extendBody: true,
+      extendBodyBehindAppBar: true,
+      backgroundColor: Colors.black,
+      appBar: PreferredSize(
+        preferredSize: Size.fromHeight(56),
+        child: buildTopBar(context),
+      ),
+      body: FutureBuilder<void>(
+        future: _initializeControllerFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.done) {
+            // If the Future is complete, display the preview.
+            return _cameraPreviewWidget();
+          } else {
+            // Otherwise, display a loading indicator.
+            return Center(child: CircularProgressIndicator());
+          }
+        },
+      ),
+      /*Stack(
+        alignment: Alignment.center,
+        children: <Widget>[
+          Container(
+              constraints: BoxConstraints.tightFor(width: double.infinity),
+              child: _cameraPreviewWidget(),
+              decoration: BoxDecoration(
+                color: Colors.black,
+              ),
+            ),
+          //SizedBox(height: 80),
+        ],
+      ),*/
+      bottomNavigationBar: Container(
+        height: _isSettingsShown ? 160 : 80,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            _isSettingsShown
+                ? Container(
+                    height: 80,
+                    decoration: BoxDecoration(
+                      color: Color(0xFF282828).withOpacity(0.45),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        Container(
+                          height: 36,
+                          child: buildSettings(),
+                        ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            InkWell(
+                              onTap: () => changeSettingIndex(0),
+                              child: Container(
+                                width: 48,
+                                height: 44,
+                                child: Column(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    Text(
+                                      'Exp',
+                                      style: TextStyle(
+                                          fontFamily: 'PT Root UI',
+                                          fontSize: 12,
+                                          color: _currentSettingIndex == 0
+                                              ? Colors.yellow
+                                              : Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                    Text(
+                                      '${_currentExposureOffset >= 0 ? "+" + _currentExposureOffset.toStringAsFixed(1) : _currentExposureOffset.toStringAsFixed(1)}',
+                                      style: TextStyle(
+                                          fontFamily: 'Roboto',
+                                          color:
+                                              Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            InkWell(
+                              onTap: () => changeSettingIndex(1),
+                              child: Container(
+                                width: 50,
+                                height: 44,
+                                child: Column(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    Text(
+                                      'Sec',
+                                      style: TextStyle(
+                                          fontFamily: 'PT Root UI',
+                                          fontSize: 12,
+                                          color: _currentSettingIndex == 1
+                                              ? Colors.yellow
+                                              : Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                    Text(
+                                      nanosecsToSecondSplit(
+                                          _currentExposureTime),
+                                      style: TextStyle(
+                                          fontFamily: 'Roboto',
+                                          color:
+                                              Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            InkWell(
+                              onTap: () => changeSettingIndex(2),
+                              child: Container(
+                                width: 48,
+                                height: 44,
+                                child: Column(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    Text(
+                                      'ISO',
+                                      style: TextStyle(
+                                          fontFamily: 'PT Root UI',
+                                          fontSize: 12,
+                                          color: _currentSettingIndex == 2
+                                              ? Colors.yellow
+                                              : Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                    Text(
+                                      '${_currentIsoValue}',
+                                      style: TextStyle(
+                                          fontFamily: 'Roboto',
+                                          color:
+                                              Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            InkWell(
+                              onTap: () => changeSettingIndex(3),
+                              child: Container(
+                                width: 48,
+                                height: 44,
+                                child: Column(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    Text(
+                                      'WB',
+                                      style: TextStyle(
+                                          fontFamily: 'PT Root UI',
+                                          fontSize: 12,
+                                          color: _currentSettingIndex == 3
+                                              ? Colors.yellow
+                                              : Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                    Text(
+                                      stringifyWbMode(_wbMode),
+                                      style: TextStyle(
+                                          fontFamily: 'Roboto',
+                                          color:
+                                              Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            InkWell(
+                              onTap: () => changeSettingIndex(4),
+                              child: Container(
+                                width: 48,
+                                height: 44,
+                                child: Column(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    SvgPicture.asset(
+                                      'assets/icons/focus.svg',
+                                      color: _currentSettingIndex == 4
+                                          ? Colors.yellow
+                                          : Color(0xF5F5F5).withOpacity(1),
+                                    ),
+                                    Text(
+                                      stringifyFocusMode(_focusMode),
+                                      style: TextStyle(
+                                          fontFamily: 'Roboto',
+                                          color:
+                                              Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            InkWell(
+                              onTap: resetSettings,
+                              child: Container(
+                                width: 48,
+                                height: 44,
+                                child: Column(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    SvgPicture.asset(
+                                      'assets/icons/reset.svg',
+                                      width: 11.5,
+                                      height: 11,
+                                    ),
+                                    Text(
+                                      'RESET',
+                                      style: TextStyle(
+                                          color:
+                                              Color(0xF5F5F5).withOpacity(1)),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      ],
+                    ),
+                  )
+                : Container(),
+            buildBottomBar(context, _isSettingsShown ? 'collapse' : 'expand'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void toggleSettings() {
+    setState(() {
+      //_sliderDisplay = SliderDisplay.None;
+      _isSettingsShown = !_isSettingsShown;
+    });
+  }
+
+  void toggleGrid() {
+    setState(() {
+      _isGridVisible = !_isGridVisible;
+    });
+  }
+
+  void toggleHorizon() {
+    _isHorizonVisible ? unsubscribeFromGiro() : subscribeToGiro();
+    setState(() {
+      _isHorizonVisible = !_isHorizonVisible;
+    });
+  }
+
+  void subscribeToGiro() {
+    _horizonLevel = 0.0;
+    _gyroscopeSubscription = gyroscopeEvents.listen((GyroscopeEvent event) {
+      setState(() {
+        _horizonLevel += event.z / 2.65;
+      });
+    });
+  }
+
+  void unsubscribeFromGiro() {
+    _horizonLevel = 0.0;
+    _gyroscopeSubscription?.cancel();
+  }
+
+  Container buildBottomBar(BuildContext context, String arrowType) {
+    return Container(
+      height: 80,
+      decoration: BoxDecoration(
+        color: Color(0xFF282828),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              Row(
+                children: [
+                  InkWell(
+                    onTap: toggleSettings,
+                    child: Container(
+                      width: 48,
+                      height: 48,
+                      child: SvgPicture.asset(
+                        'assets/icons/${_isSettingsShown ? "expand" : "collapse"}_arrow.svg',
+                        fit: BoxFit.none,
+                        color: Color(0xFFF5F5F5),
+                      ),
+                    ),
+                  ),
+                  AnimatedBuilder(
+                    animation: _iconRotationAnimation,
+                    child: InkWell(
+                      onTap: () {
+                        toggleHorizon();
+                      },
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        child: SvgPicture.asset(
+                          'assets/icons/horizon.svg',
+                          fit: BoxFit.none,
+                          color: _isHorizonVisible
+                              ? Color(0xFFFFD600)
+                              : Color(0xFFF5F5F5),
+                        ),
+                      ),
+                    ),
+                    builder: (BuildContext context, Widget child) {
+                      return Transform.rotate(
+                        angle: _iconRotationAnimation.value,
+                        child: child,
+                      );
+                    },
+                  ),
+                ],
+              ),
+              Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: Color(0xFFF5F5F5),
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: FlatButton(
+                    padding: EdgeInsets.zero,
+                    shape: CircleBorder(),
+                    onPressed: onTakePictureButtonPressed,
+                    child: Container(
+                      width: 52,
+                      height: 52,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Color(0xFF282828), width: 1),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Row(
+                children: [
+                  AnimatedBuilder(
+                    animation: _iconRotationAnimation,
+                    child: InkWell(
+                      onTap: () {
+                        toggleGrid();
+                      },
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        child: SvgPicture.asset(
+                          'assets/icons/grid.svg',
+                          fit: BoxFit.none,
+                          color: _isGridVisible
+                              ? Color(0xFFFFD600)
+                              : Color(0xFFF5F5F5),
+                        ),
+                      ),
+                    ),
+                    builder: (BuildContext context, Widget child) {
+                      return Transform.rotate(
+                        angle: _iconRotationAnimation.value,
+                        child: child,
+                      );
+                    },
+                  ),
+                  AnimatedBuilder(
+                    animation: _iconRotationAnimation,
+                    child: InkWell(
+                      onTap: () {
+                        Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (context) =>
+                                    MainPage(selectedIndex: 2)));
+                      },
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        child: Icon(
+                          Icons.photo_library,
+                          color: Color(0xFFF5F5F5),
+                        ),
+                      ),
+                    ),
+                    builder: (BuildContext context, Widget child) {
+                      return Transform.rotate(
+                        angle: _iconRotationAnimation.value,
+                        child: child,
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   AppBar buildTopBar(BuildContext context) {
     return AppBar(
       backgroundColor: Color(0xFF282828),
@@ -686,7 +844,7 @@ class _CameraPageState extends State<CameraPage>
               Row(
                 children: [
                   AnimatedBuilder(
-                    animation: _animation,
+                    animation: _iconRotationAnimation,
                     child: InkWell(
                       onTap: toggleTorch,
                       child: Container(
@@ -697,49 +855,11 @@ class _CameraPageState extends State<CameraPage>
                     ),
                     builder: (BuildContext context, Widget child) {
                       return Transform.rotate(
-                        angle: _animation.value,
+                        angle: _iconRotationAnimation.value,
                         child: child,
                       );
                     },
                   ),
-                  /*AnimatedBuilder(
-                    animation: _animation,
-                    child: InkWell(
-                      onTap: toggleRAW,
-                      child: Container(
-                        width: 48,
-                        height: 48,
-                        child: Container(
-                          margin: EdgeInsets.symmetric(
-                              horizontal: 8.5, vertical: 16),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(1),
-                            color: isRAWEnabled
-                                ? Color(0xFFFFD600)
-                                : Color(0xFFF5F5F5),
-                          ),
-                          child: Center(
-                            child: Text(
-                              'RAW',
-                              style: TextStyle(
-                                fontFamily: 'Roboto',
-                                fontSize: 12,
-                                letterSpacing: 0.4,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF282828),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    builder: (BuildContext context, Widget child) {
-                      return Transform.rotate(
-                        angle: _animation.value,
-                        child: child,
-                      );
-                    },
-                  ),*/
                 ],
               ),
               InkWell(
@@ -759,20 +879,813 @@ class _CameraPageState extends State<CameraPage>
       ),
     );
   }
-}
 
-class DisplayPictureScreen extends StatelessWidget {
-  final String imagePath;
+  Future<void> toggleTorch() async {
+    if (_flashMode == FlashMode.off) {
+      // Turn on the flash for capture
+      _flashMode = FlashMode.torch;
+    } else if (_flashMode == FlashMode.always ||
+        _flashMode == FlashMode.torch) {
+      // Turn on the flash for capture if needed
+      _flashMode = FlashMode.auto;
+    } else {
+      // Turn off the flash
+      _flashMode = FlashMode.off;
+    }
 
-  const DisplayPictureScreen({Key key, this.imagePath}) : super(key: key);
+    await controller.setFlashMode(_flashMode);
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text('Результат')),
-      // The image is stored as a file on the device. Use the `Image.file`
-      // constructor with the given path to display the image.
-      body: Center(child: Image.file(File(imagePath))),
+    setState(() {});
+  }
+
+  Icon getTorchIcon() {
+    switch (_flashMode) {
+      case FlashMode.off:
+        return Icon(
+          Icons.flash_off,
+          color: Color(0xFFF5F5F5),
+        );
+      case FlashMode.always:
+        return Icon(
+          Icons.flash_on,
+          color: Color(0xFFFFD600),
+        );
+      case FlashMode.torch:
+        return Icon(
+          Icons.flash_on,
+          color: Color(0xFFFFD600),
+        );
+      case FlashMode.auto:
+        return Icon(
+          Icons.flash_auto,
+          color: Color(0xFFFFD600),
+        );
+      default:
+        return Icon(
+          Icons.flash_off,
+          color: Color(0xFFF5F5F5),
+        );
+    }
+  }
+
+  /// Display the preview from the camera (or a message if the preview is not available).
+  Widget _cameraPreviewWidget() {
+    if (controller == null || !controller.value.isInitialized) {
+      return Container();
+    } else {
+      return Stack(
+        alignment: Alignment.center,
+        children: [
+          AspectRatio(
+            aspectRatio: controller.value.aspectRatio,
+            child: Listener(
+              onPointerDown: (_) => _pointers++,
+              onPointerUp: (_) => _pointers--,
+              child: LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints constraints) {
+                return GestureDetector(
+                  onScaleStart: _handleScaleStart,
+                  onScaleUpdate: _handleScaleUpdate,
+                  onTapDown: (details) => onViewFinderTap(details, constraints),
+                  child: CameraPreview(controller),
+                );
+              }),
+            ),
+          ),
+          _isGridVisible
+              ? AspectRatio(
+                  aspectRatio: controller.value.aspectRatio,
+                  child: buildGrid(),
+                )
+              : Container(),
+          _isHorizonVisible ? buildHorizonLevel() : Container(),
+        ],
+      );
+    }
+  }
+
+  void _handleScaleStart(ScaleStartDetails details) {
+    _baseScale = _currentScale;
+  }
+
+  Future<void> _handleScaleUpdate(ScaleUpdateDetails details) async {
+    // When there are not exactly two fingers on screen don't scale
+    if (_pointers != 2) {
+      return;
+    }
+
+    _currentScale = (_baseScale * details.scale)
+        .clamp(_minAvailableZoom, _maxAvailableZoom);
+
+    await controller.setZoomLevel(_currentScale);
+  }
+
+  /// Display the thumbnail of the captured image or video.
+  Widget _thumbnailWidget() {
+    return Positioned.fill(
+      child: Align(
+        alignment: Alignment.centerRight,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            videoController == null && imageFile == null
+                ? Container()
+                : SizedBox(
+                    child: (videoController == null)
+                        ? Image.file(File(imageFile.path))
+                        : Container(
+                            child: Center(
+                              child: AspectRatio(
+                                  aspectRatio:
+                                      videoController.value.size != null
+                                          ? videoController.value.aspectRatio
+                                          : 1.0,
+                                  child: VideoPlayer(videoController)),
+                            ),
+                            decoration: BoxDecoration(
+                                border: Border.all(color: Colors.pink)),
+                          ),
+                    width: 64.0,
+                    height: 64.0,
+                  ),
+          ],
+        ),
+      ),
     );
+  }
+
+  /// Display a bar with buttons to change the flash and exposure modes
+  Widget _modeControlRowWidget() {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          mainAxisSize: MainAxisSize.max,
+          children: <Widget>[
+            IconButton(
+              icon: Icon(Icons.flash_on),
+              color: Colors.blue,
+              //onPressed: controller != null ? onFlashModeButtonPressed : null,
+            ),
+            IconButton(
+              icon: Icon(Icons.exposure),
+              color: Colors.blue,
+              //onPressed: controller != null ? onExposureModeButtonPressed : null,
+            ),
+            IconButton(
+              icon: Icon(Icons.filter_center_focus),
+              color: Colors.blue,
+              // onPressed: controller != null ? onFocusModeButtonPressed : null,
+            ),
+            IconButton(
+              icon: Icon(enableAudio ? Icons.volume_up : Icons.volume_mute),
+              color: Colors.blue,
+              // onPressed: controller != null ? onAudioModeButtonPressed : null,
+            ),
+          ],
+        ),
+        _flashModeControlRowWidget(),
+        _exposureModeControlRowWidget(),
+        _focusModeControlRowWidget(),
+      ],
+    );
+  }
+
+  Widget _flashModeControlRowWidget() {
+    return ClipRect(
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        mainAxisSize: MainAxisSize.max,
+        children: [
+          IconButton(
+            icon: Icon(Icons.flash_off),
+            color: controller?.value?.flashMode == FlashMode.off
+                ? Colors.orange
+                : Colors.blue,
+            onPressed: controller != null
+                ? () => onSetFlashModeButtonPressed(FlashMode.off)
+                : null,
+          ),
+          IconButton(
+            icon: Icon(Icons.flash_auto),
+            color: controller?.value?.flashMode == FlashMode.auto
+                ? Colors.orange
+                : Colors.blue,
+            onPressed: controller != null
+                ? () => onSetFlashModeButtonPressed(FlashMode.auto)
+                : null,
+          ),
+          IconButton(
+            icon: Icon(Icons.flash_on),
+            color: controller?.value?.flashMode == FlashMode.always
+                ? Colors.orange
+                : Colors.blue,
+            onPressed: controller != null
+                ? () => onSetFlashModeButtonPressed(FlashMode.always)
+                : null,
+          ),
+          IconButton(
+            icon: Icon(Icons.highlight),
+            color: controller?.value?.flashMode == FlashMode.torch
+                ? Colors.orange
+                : Colors.blue,
+            onPressed: controller != null
+                ? () => onSetFlashModeButtonPressed(FlashMode.torch)
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _exposureModeControlRowWidget() {
+    final ButtonStyle styleAuto = TextButton.styleFrom(
+      primary: controller?.value?.exposureMode == ExposureMode.auto
+          ? Colors.orange
+          : Colors.blue,
+    );
+    final ButtonStyle styleLocked = TextButton.styleFrom(
+      primary: controller?.value?.exposureMode == ExposureMode.locked
+          ? Colors.orange
+          : Colors.blue,
+    );
+
+    return ClipRect(
+      child: Container(
+        color: Colors.grey.shade50,
+        child: Column(
+          children: [
+            Center(
+              child: Text("Exposure Mode"),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              mainAxisSize: MainAxisSize.max,
+              children: [
+                TextButton(
+                  child: Text('AUTO'),
+                  style: styleAuto,
+                  onPressed: controller != null
+                      ? () => onSetExposureModeButtonPressed(ExposureMode.auto)
+                      : null,
+                  onLongPress: () {
+                    if (controller != null) controller.setExposurePoint(null);
+                    showInSnackBar('Resetting exposure point');
+                  },
+                ),
+                TextButton(
+                  child: Text('LOCKED'),
+                  style: styleLocked,
+                  onPressed: controller != null
+                      ? () =>
+                          onSetExposureModeButtonPressed(ExposureMode.locked)
+                      : null,
+                ),
+              ],
+            ),
+            Center(
+              child: Text("Exposure Offset"),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              mainAxisSize: MainAxisSize.max,
+              children: [
+                Text(_minAvailableExposureOffset.toString()),
+                Slider(
+                  value: _currentExposureOffset,
+                  min: _minAvailableExposureOffset,
+                  max: _maxAvailableExposureOffset,
+                  label: _currentExposureOffset.toString(),
+                  onChanged:
+                      _minAvailableExposureOffset == _maxAvailableExposureOffset
+                          ? null
+                          : setExposureOffset,
+                ),
+                Text(_maxAvailableExposureOffset.toString()),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _focusModeControlRowWidget() {
+    final ButtonStyle styleAuto = TextButton.styleFrom(
+      primary: controller?.value?.focusMode == FocusMode.auto
+          ? Colors.orange
+          : Colors.blue,
+    );
+    final ButtonStyle styleLocked = TextButton.styleFrom(
+      primary: controller?.value?.focusMode == FocusMode.locked
+          ? Colors.orange
+          : Colors.blue,
+    );
+
+    return ClipRect(
+      child: Container(
+        color: Colors.grey.shade50,
+        child: Column(
+          children: [
+            Center(
+              child: Text("Focus Mode"),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              mainAxisSize: MainAxisSize.max,
+              children: [
+                TextButton(
+                  child: Text('AUTO'),
+                  style: styleAuto,
+                  onPressed: controller != null
+                      ? () => onSetFocusModeButtonPressed(FocusMode.auto)
+                      : null,
+                  onLongPress: () {
+                    if (controller != null) controller.setFocusPoint(null);
+                    showInSnackBar('Resetting focus point');
+                  },
+                ),
+                TextButton(
+                  child: Text('LOCKED'),
+                  style: styleLocked,
+                  onPressed: controller != null
+                      ? () => onSetFocusModeButtonPressed(FocusMode.locked)
+                      : null,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Display the control bar with buttons to take pictures and record videos.
+  Widget _captureControlRowWidget() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      mainAxisSize: MainAxisSize.max,
+      children: <Widget>[
+        IconButton(
+          icon: const Icon(Icons.camera_alt),
+          color: Colors.blue,
+          onPressed: controller != null &&
+                  controller.value.isInitialized &&
+                  !controller.value.isRecordingVideo
+              ? onTakePictureButtonPressed
+              : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.videocam),
+          color: Colors.blue,
+          onPressed: controller != null &&
+                  controller.value.isInitialized &&
+                  !controller.value.isRecordingVideo
+              ? onVideoRecordButtonPressed
+              : null,
+        ),
+        IconButton(
+          icon: controller != null && controller.value.isRecordingPaused
+              ? Icon(Icons.play_arrow)
+              : Icon(Icons.pause),
+          color: Colors.blue,
+          onPressed: controller != null &&
+                  controller.value.isInitialized &&
+                  controller.value.isRecordingVideo
+              ? (controller != null && controller.value.isRecordingPaused
+                  ? onResumeButtonPressed
+                  : onPauseButtonPressed)
+              : null,
+        ),
+        IconButton(
+          icon: const Icon(Icons.stop),
+          color: Colors.red,
+          onPressed: controller != null &&
+                  controller.value.isInitialized &&
+                  controller.value.isRecordingVideo
+              ? onStopButtonPressed
+              : null,
+        )
+      ],
+    );
+  }
+
+  /// Display a row of toggle to select the camera (or a message if no camera is available).
+  Widget _cameraTogglesRowWidget() {
+    final List<Widget> toggles = <Widget>[];
+
+    if (CameraConfig.cameras.isEmpty) {
+      return const Text('No camera found');
+    } else {
+      for (CameraDescription cameraDescription in CameraConfig.cameras) {
+        toggles.add(
+          SizedBox(
+            width: 90.0,
+            child: RadioListTile<CameraDescription>(
+              title: Icon(getCameraLensIcon(cameraDescription.lensDirection)),
+              groupValue: controller?.description,
+              value: cameraDescription,
+              onChanged: controller != null && controller.value.isRecordingVideo
+                  ? null
+                  : onNewCameraSelected,
+            ),
+          ),
+        );
+      }
+    }
+
+    return Row(children: toggles);
+  }
+
+  String timestamp() => DateTime.now().millisecondsSinceEpoch.toString();
+
+  void showInSnackBar(String message) {
+    // ignore: deprecated_member_use
+    _scaffoldKey.currentState.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void onViewFinderTap(TapDownDetails details, BoxConstraints constraints) {
+    final offset = Offset(
+      details.localPosition.dx / constraints.maxWidth,
+      details.localPosition.dy / constraints.maxHeight,
+    );
+    controller.setExposurePoint(offset);
+    controller.setFocusPoint(offset);
+  }
+
+  void onNewCameraSelected(CameraDescription cameraDescription) async {
+    if (controller != null) {
+      await controller.dispose();
+    }
+    controller = CameraController(
+      cameraDescription,
+      ResolutionPreset.veryHigh,
+      enableAudio: enableAudio,
+      imageFormatGroup: ImageFormatGroup.jpeg,
+    );
+
+    // If the controller is updated then update the UI.
+    controller.addListener(() {
+      if (mounted) setState(() {});
+      if (controller.value.hasError) {
+        showInSnackBar('Camera error ${controller.value.errorDescription}');
+      }
+    });
+
+    try {
+      _initializeControllerFuture = controller.initialize();
+      await _initializeControllerFuture;
+      _minAvailableExposureOffset = await controller.getMinExposureOffset();
+      _maxAvailableExposureOffset = await controller.getMaxExposureOffset();
+      _minAvailableExposureTime = await controller.getMinExposureTime();
+      _maxAvailableExposureTime = await controller.getMaxExposureTime();
+      _minAvailableIsoValue = await controller.getMinIsoValue();
+      _maxAvailableIsoValue = await controller.getMaxIsoValue();
+      _currentExposureTime =
+          (_maxAvailableExposureTime - _minAvailableExposureTime) ~/ 2 +
+              _minAvailableExposureTime;
+      _maxAvailableZoom = await controller.getMaxZoomLevel();
+      _minAvailableZoom = await controller.getMinZoomLevel();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void onTakePictureButtonPressed() {
+    takePicture().then((XFile file) {
+      if (mounted) {
+        setState(() {
+          imageFile = file;
+          videoController?.dispose();
+          videoController = null;
+        });
+        if (file != null) {
+
+          var state = context.read<AuthCubit>().state;
+          if (state is AuthSignedIn)
+            //if(moduleEntryId == null)
+              ApiPhotoRepository().addPhoto(state.token, file.path).then((_) {
+                context.read<PhotoCubit>().getPhotos(state.token);
+              });
+            // else {
+            //   ApiSubmissionRepository().submitPhoto(state.token, file.path, moduleEntryId).then((_) {
+            //     context.read<PhotoCubit>().getPhotos(state.token);
+            //   });
+            //    Navigator.pop(context);
+            // }
+        }
+        ;
+      }
+    });
+  }
+
+  /*void onFlashModeButtonPressed() {
+    if (_flashModeControlRowAnimationController.value == 1) {
+      _flashModeControlRowAnimationController.reverse();
+    } else {
+      _flashModeControlRowAnimationController.forward();
+      _exposureModeControlRowAnimationController.reverse();
+      _focusModeControlRowAnimationController.reverse();
+    }
+  }
+
+  void onExposureModeButtonPressed() {
+    if (_exposureModeControlRowAnimationController.value == 1) {
+      _exposureModeControlRowAnimationController.reverse();
+    } else {
+      _exposureModeControlRowAnimationController.forward();
+      _flashModeControlRowAnimationController.reverse();
+      _focusModeControlRowAnimationController.reverse();
+    }
+  }
+
+  void onFocusModeButtonPressed() {
+    if (_focusModeControlRowAnimationController.value == 1) {
+      _focusModeControlRowAnimationController.reverse();
+    } else {
+      _focusModeControlRowAnimationController.forward();
+      _flashModeControlRowAnimationController.reverse();
+      _exposureModeControlRowAnimationController.reverse();
+    }
+  }
+
+  void onAudioModeButtonPressed() {
+    enableAudio = !enableAudio;
+    if (controller != null) {
+      onNewCameraSelected(controller.description);
+    }
+  }*/
+
+  void onSetFlashModeButtonPressed(FlashMode mode) {
+    setFlashMode(mode).then((_) {
+      if (mounted) setState(() {});
+      showInSnackBar('Flash mode set to ${mode.toString().split('.').last}');
+    });
+  }
+
+  void onSetExposureModeButtonPressed(ExposureMode mode) {
+    setExposureMode(mode).then((_) {
+      if (mounted) setState(() {});
+      showInSnackBar('Exposure mode set to ${mode.toString().split('.').last}');
+    });
+  }
+
+  void onSetFocusModeButtonPressed(FocusMode mode) {
+    setFocusMode(mode).then((_) {
+      if (mounted) setState(() {});
+      showInSnackBar('Focus mode set to ${mode.toString().split('.').last}');
+    });
+  }
+
+  void onVideoRecordButtonPressed() {
+    startVideoRecording().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  void onStopButtonPressed() {
+    stopVideoRecording().then((file) {
+      if (mounted) setState(() {});
+      if (file != null) {
+        showInSnackBar('Video recorded to ${file.path}');
+        videoFile = file;
+        _startVideoPlayer();
+      }
+    });
+  }
+
+  void onPauseButtonPressed() {
+    pauseVideoRecording().then((_) {
+      if (mounted) setState(() {});
+      showInSnackBar('Video recording paused');
+    });
+  }
+
+  void onResumeButtonPressed() {
+    resumeVideoRecording().then((_) {
+      if (mounted) setState(() {});
+      showInSnackBar('Video recording resumed');
+    });
+  }
+
+  Future<void> startVideoRecording() async {
+    if (!controller.value.isInitialized) {
+      showInSnackBar('Error: select a camera first.');
+      return;
+    }
+
+    if (controller.value.isRecordingVideo) {
+      // A recording is already started, do nothing.
+      return;
+    }
+
+    try {
+      await controller.startVideoRecording();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      return;
+    }
+  }
+
+  Future<XFile> stopVideoRecording() async {
+    if (!controller.value.isRecordingVideo) {
+      return null;
+    }
+
+    try {
+      return controller.stopVideoRecording();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      return null;
+    }
+  }
+
+  Future<void> pauseVideoRecording() async {
+    if (!controller.value.isRecordingVideo) {
+      return null;
+    }
+
+    try {
+      await controller.pauseVideoRecording();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> resumeVideoRecording() async {
+    if (!controller.value.isRecordingVideo) {
+      return null;
+    }
+
+    try {
+      await controller.resumeVideoRecording();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setFlashMode(FlashMode mode) async {
+    setState(() {
+      _flashMode = mode;
+    });
+    try {
+      await controller.setFlashMode(mode);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setExposureMode(ExposureMode mode) async {
+    setState(() {
+      _exposureMode = mode;
+    });
+    try {
+      await controller.setExposureMode(mode);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setIsoMode(IsoMode mode) async {
+    setState(() {
+      _isoMode = mode;
+    });
+    try {
+      await controller.setIsoMode(mode);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setExposureOffset(double offset) async {
+    // if(_exposureMode != ExposureMode.auto)
+    //   setExposureMode(ExposureMode.auto);
+    if (_isoMode != IsoMode.auto) setIsoMode(IsoMode.auto);
+    setState(() {
+      _currentExposureOffset = offset;
+    });
+    try {
+      offset = await controller.setExposureOffset(offset);
+
+      //if (_isoMode != IsoMode.auto) setIsoMode(IsoMode.auto);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setExposureTime(int nanosecs) async {
+    //  if(_exposureMode != ExposureMode.auto)
+    //     setExposureMode(ExposureMode.auto);
+    //if (_exposureMode != ExposureMode.locked) setExposureMode(ExposureMode.locked);
+    if (_isoMode != IsoMode.locked) setIsoMode(IsoMode.locked);
+
+    setState(() {
+      _currentExposureTime = nanosecs;
+    });
+    try {
+      //setIsoValue(_currentIsoValue);
+      nanosecs = await controller.setExposureTime(nanosecs);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setIsoValue(int sensetivity) async {
+    if (_exposureMode != ExposureMode.auto) setExposureMode(ExposureMode.auto);
+    if (_isoMode != IsoMode.locked) setIsoMode(IsoMode.locked);
+    setState(() {
+      _currentIsoValue = sensetivity;
+    });
+    try {
+      sensetivity = await controller.setIsoValue(sensetivity);
+      //sensetivity = await controller.setIsoValue(sensetivity);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+    setExposureMode(ExposureMode.locked);
+  }
+
+  Future<void> setFocusMode(FocusMode mode) async {
+    setState(() {
+      _focusMode = mode;
+    });
+    try {
+      await controller.setFocusMode(mode);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> setWbMode(WbMode mode) async {
+    setState(() {
+      _wbMode = mode;
+    });
+    try {
+      await controller.setWbMode(mode);
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      rethrow;
+    }
+  }
+
+  Future<void> _startVideoPlayer() async {
+    final VideoPlayerController vController =
+        VideoPlayerController.file(File(videoFile.path));
+    videoPlayerListener = () {
+      if (videoController != null && videoController.value.size != null) {
+        // Refreshing the state to update video player with the correct ratio.
+        if (mounted) setState(() {});
+        videoController.removeListener(videoPlayerListener);
+      }
+    };
+    vController.addListener(videoPlayerListener);
+    await vController.setLooping(true);
+    await vController.initialize();
+    await videoController?.dispose();
+    if (mounted) {
+      setState(() {
+        imageFile = null;
+        videoController = vController;
+      });
+    }
+    await vController.play();
+  }
+
+  Future<XFile> takePicture() async {
+    if (!controller.value.isInitialized) {
+      showInSnackBar('Error: select a camera first.');
+      return null;
+    }
+
+    if (controller.value.isTakingPicture) {
+      // A capture is already pending, do nothing.
+      return null;
+    }
+
+    try {
+      XFile file = await controller.takePicture();
+      return file;
+    } on CameraException catch (e) {
+      _showCameraException(e);
+      return null;
+    }
+  }
+
+  void _showCameraException(CameraException e) {
+    logError(e.code, e.description);
+    showInSnackBar('Error: ${e.code}\n${e.description}');
   }
 }

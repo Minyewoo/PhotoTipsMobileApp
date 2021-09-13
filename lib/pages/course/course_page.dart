@@ -12,10 +12,8 @@ import 'package:photo_tips/cubit/submission_cubit.dart';
 import 'package:photo_tips/data/models/module.dart';
 import 'package:photo_tips/data/models/module_entry.dart';
 import 'package:photo_tips/data/models/submission.dart';
+
 import 'package:photo_tips/pages/camera/camera_page.dart';
-import 'package:photo_tips/pages/camera/camera_page2.dart';
-import 'package:photo_tips/pages/camera/camera_page3.dart';
-import 'package:photo_tips/pages/camera/camera_page4.dart';
 import 'package:photo_tips/pages/course/lesson_page.dart';
 import 'package:photo_tips/pages/galery/galery_page.dart';
 import 'package:photo_tips/pages/profile/profile_page.dart';
@@ -121,9 +119,10 @@ class _CoursePageState extends State<CoursePage> {
   Stack buildCoursePageWithData(BuildContext context, ModuleLoaded state) {
     var submissionsState = context.watch<SubmissionCubit>().state;
     List<Submission> submissions;
-    if(submissionsState is SubmissionLoaded)
+    if (submissionsState is SubmissionLoaded)
       submissions = submissionsState.submissions;
-    else submissions = [];
+    else
+      submissions = [];
     return Stack(
       children: [
         ScrollConfiguration(
@@ -155,12 +154,13 @@ class _CoursePageState extends State<CoursePage> {
                           ),
                         ),
                         //SizedBox(height: 8),
-                        buildExpandableModuleList(context, [state.modules.last]),
+                        buildExpandableModuleList(
+                            context, [state.modules.last]),
                         Align(
                           alignment: Alignment.topLeft,
                           child: Padding(
-                            padding:
-                                const EdgeInsets.only(top: 24.0, left: 3.0, bottom: 8.0),
+                            padding: const EdgeInsets.only(
+                                top: 24.0, left: 3.0, bottom: 8.0),
                             child: Text(
                               "Модули",
                               style: Theme.of(context).textTheme.headline1,
@@ -243,7 +243,7 @@ class _CoursePageState extends State<CoursePage> {
                         color: Colors.transparent,
                         child: InkWell(
                           onTap: () => Navigator.pushNamed(
-                              context, CameraPage4.routeName),
+                              context, CameraPage.routeName),
                           child: Container(
                             width: 56,
                             height: 56,

@@ -1,6 +1,5 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:photo_tips/pages/camera/camera_page.dart';
 import 'package:photo_tips/pages/course/course_page.dart';
 import 'package:photo_tips/pages/galery/galery_page.dart';
 import 'package:photo_tips/pages/profile/profile_page.dart';
